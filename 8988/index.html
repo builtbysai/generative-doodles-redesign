@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>№8988 · Orbit Portraits - Generative Doodles</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    background: #0a0a10;
+    color: #e8e4da;
+    font-family: Georgia, serif;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    min-height: 100vh;
+    padding: 4vmin 20px 6vmin;
+    overflow: hidden;
+  }
+  header { text-align: center; margin-bottom: 2.5vmin; max-width: 660px; }
+  header .kicker {
+    font-size: 12px; letter-spacing: 0.42em; text-transform: uppercase;
+    color: #7a7a8c; margin-bottom: 12px;
+  }
+  header h1 { font-size: 26px; font-weight: normal; margin-bottom: 10px; }
+  header h1 .num { color: #ffb347; }
+  header p { color: #7a7a8c; font-size: 14px; line-height: 1.7; font-style: italic; }
+  header p b { color: #cfc9b8; font-weight: normal; }
+  #stage {
+    background: #000;
+    box-shadow: 0 18px 60px rgba(0,0,0,0.6), 0 0 90px rgba(120,60,180,0.12);
+    position: relative;
+  }
+  #stage canvas { display: block; width: 100%; height: 100%; }
+  #verdict {
+    position: absolute; left: 14px; bottom: 10px;
+    font-size: 12px; font-style: italic; color: #8a8a9c;
+    background: rgba(0,0,0,0.55); padding: 4px 10px; border-radius: 3px;
+    pointer-events: none;
+  }
+  #verdict .k { color: #7fe0a8; } #verdict .d { color: #ff7a7a; }
+  #controls {
+    display: flex; gap: 10px; align-items: center; justify-content: center;
+    margin-top: 2.2vmin; flex-wrap: wrap;
+  }
+  #controls button {
+    background: #ffb347; border: none; color: #0a0a10;
+    font-family: Georgia, serif; font-size: 14px; font-weight: bold;
+    padding: 9px 22px; cursor: pointer; letter-spacing: 0.08em;
+  }
+  #controls button:hover { background: #ffc46b; }
+  #controls select {
+    background: #14141c; border: 1px solid #33333f; color: #e8e4da;
+    font-family: Georgia, serif; font-size: 14px; padding: 8px 12px; outline: none;
+  }
+  #strip { display: flex; gap: 8px; margin-top: 2vmin; flex-wrap: wrap; justify-content: center; max-width: 900px; }
+  #strip .cell { position: relative; width: 84px; height: 84px; background: #000; border: 1px solid #26262e; }
+  #strip .cell img { width: 100%; height: 100%; display: block; }
+  #strip .cell .tag {
+    position: absolute; left: 0; right: 0; bottom: 0; font-size: 9px;
+    text-align: center; padding: 2px 0; font-style: italic;
+    background: rgba(0,0,0,0.65); color: #8a8a9c;
+  }
+  #strip .cell.dud .tag { color: #ff7a7a; }
+  #strip .cell.dud { border-color: #5a2a2a; }
+  footer { margin-top: 2.2vmin; color: #55555f; font-size: 13px; font-style: italic; }
+  footer a { color: #ffb347; text-decoration: none; }
+</style>
+</head>
+<body>
+<header>
+  <div class="kicker">Generative Doodles</div>
+  <h1><span class="num">№8988</span> · Orbit Portraits</h1>
+  <p>Strange attractors, density-rendered like flame fractals. Every roll of
+  the dice picks an orbit; a laciness test decides whether it hangs in the
+  gallery or on the <b>reject wall</b>. <b>Roll a new orbit.</b></p>
+</header>
+<div id="stage"><canvas id="c"></canvas><div id="verdict"></div></div>
+<div id="controls">
+  <button id="roll">NEW ORBIT</button>
+  <select id="kind">
+    <option value="any">any attractor</option>
+    <option value="hopalong">hopalong</option>
+    <option value="dejong">de jong</option>
+    <option value="svensson">svensson</option>
+  </select>
+</div>
+<div id="strip"></div>
+<footer><a href="../">← all doodles</a> · drawn with code, no libraries</footer>
+<script>
+"use strict";
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+const stage = document.getElementById('stage');
+const verdictEl = document.getElementById('verdict');
+const stripEl = document.getElementById('strip');
+
+let W = 0, H = 0, DPR = 1;
+const RES = 560;              // histogram resolution
+const ITERS = 700000;         // orbit iterations per render
+const hist = new Float32Array(RES * RES);
+
+function mulberry32(a){
+  return function(){
+    a |= 0; a = a + 0x6D2B79F5 | 0;
+    let t = Math.imul(a ^ a >>> 15, 1 | a);
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  };
+}
+const seedBase = (Math.random() * 1e9) | 0;
+
+// flame-ish colormap: black -> indigo -> magenta -> amber -> pale
+const CMAP = [];
+(function(){
+  const stops = [[0,0,0],[26,16,64],[112,32,128],[200,60,140],[255,150,70],[255,230,180],[255,255,245]];
+  for (let i = 0; i < 256; i++){
+    const t = i / 255 * (stops.length - 1);
+    const k = Math.min(stops.length - 2, Math.floor(t));
+    const f = t - k;
+    CMAP.push([
+      Math.round(stops[k][0] + (stops[k+1][0] - stops[k][0]) * f),
+      Math.round(stops[k][1] + (stops[k+1][1] - stops[k][1]) * f),
+      Math.round(stops[k][2] + (stops[k+1][2] - stops[k][2]) * f)
+    ]);
+  }
+})();
+
+function rollParams(kind, rnd){
+  const R = (a, b) => a + rnd() * (b - a);
+  if (kind === 'hopalong') return { kind, p: [R(-3, 3), R(0.5, 3), R(0.2, 2)] };
+  if (kind === 'dejong')   return { kind, p: [R(-2.5, 2.5), R(-2.5, 2.5), R(-2.5, 2.5), R(-2.5, 2.5)] };
+  return { kind: 'svensson', p: [R(-2.5, 2.5), R(-2.5, 2.5), R(-0.5, 1.5), R(-1.5, 1.5)] };
+}
+function step(kind, p, x, y){
+  if (kind === 'hopalong'){
+    const [a, b, c] = p;
+    return [y - Math.sign(x) * Math.sqrt(Math.abs(b * x - c)), a - x];
+  }
+  if (kind === 'dejong'){
+    const [a, b, c, d] = p;
+    return [Math.sin(a * y) - Math.cos(b * x), Math.sin(c * x) - Math.cos(d * y)];
+  }
+  const [a, b, c, d] = p;
+  return [d * Math.sin(a * x) - Math.sin(b * y), c * Math.cos(a * x) + Math.cos(b * y)];
+}
+
+function renderOrbit(att){
+  hist.fill(0);
+  let x = 0.1, y = 0.1, ok = true;
+  let minX = 1e9, maxX = -1e9, minY = 1e9, maxY = -1e9;
+  const xs = new Float32Array(ITERS), ys = new Float32Array(ITERS);
+  for (let i = 0; i < ITERS; i++){
+    const r = step(att.kind, att.p, x, y);
+    x = r[0]; y = r[1];
+    if (!isFinite(x) || !isFinite(y) || Math.abs(x) > 1e6 || Math.abs(y) > 1e6){ ok = false; break; }
+    xs[i] = x; ys[i] = y;
+    if (i > 100){
+      if (x < minX) minX = x; if (x > maxX) maxX = x;
+      if (y < minY) minY = y; if (y > maxY) maxY = y;
+    }
+  }
+  if (!ok) return { ok: false, reason: 'escaped to infinity' };
+  const spanX = maxX - minX || 1, spanY = maxY - minY || 1;
+  const sc = Math.min(RES / spanX, RES / spanY) * 0.92;
+  const ox = (RES - spanX * sc) / 2, oy = (RES - spanY * sc) / 2;
+  let hit = 0;
+  const seen = new Uint8Array(RES * RES);
+  for (let i = 100; i < ITERS; i++){
+    const px = Math.floor(ox + (xs[i] - minX) * sc);
+    const py = Math.floor(oy + (ys[i] - minY) * sc);
+    if (px < 0 || px >= RES || py < 0 || py >= RES) continue;
+    const idx = py * RES + px;
+    hist[idx]++;
+    if (!seen[idx]){ seen[idx] = 1; hit++; }
+  }
+  const coverage = hit / (RES * RES);
+  if (coverage < 0.02) return { ok: false, reason: 'collapsed lattice', coverage };
+  if (coverage > 0.85) return { ok: false, reason: 'featureless wash', coverage };
+  return { ok: true, coverage };
+}
+
+function paintHistogram(){
+  let mx = 0;
+  for (let i = 0; i < hist.length; i++) if (hist[i] > mx) mx = hist[i];
+  const img = ctx.createImageData(RES, RES);
+  const d = img.data;
+  const lmx = Math.log1p(mx);
+  for (let i = 0; i < hist.length; i++){
+    const t = Math.log1p(hist[i]) / lmx;
+    const c = CMAP[Math.min(255, (t * 255) | 0)];
+    const o = i * 4;
+    d[o] = c[0]; d[o+1] = c[1]; d[o+2] = c[2]; d[o+3] = 255;
+  }
+  const off = document.createElement('canvas');
+  off.width = RES; off.height = RES;
+  off.getContext('2d').putImageData(img, 0, 0);
+  return off;
+}
+
+function resize(){
+  DPR = Math.min(2, window.devicePixelRatio || 1);
+  const s = Math.min(620, window.innerWidth - 40, window.innerHeight - 420);
+  W = H = Math.max(300, s);
+  stage.style.width = W + 'px'; stage.style.height = H + 'px';
+  canvas.width = W * DPR; canvas.height = H * DPR;
+  redraw();
+}
+window.addEventListener('resize', resize);
+
+let currentOff = null, currentAtt = null, currentVerdict = '';
+function redraw(){
+  if (!currentOff) return;
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.fillStyle = '#000';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.imageSmoothingEnabled = true; ctx.imageSmoothingQuality = 'high';
+  ctx.drawImage(currentOff, 0, 0, canvas.width, canvas.height);
+}
+
+function thumbURL(off){
+  const t = document.createElement('canvas');
+  t.width = t.height = 84;
+  t.getContext('2d').drawImage(off, 0, 0, 84, 84);
+  return t.toDataURL();
+}
+
+function addStrip(off, label, dud){
+  const cell = document.createElement('div');
+  cell.className = 'cell' + (dud ? ' dud' : '');
+  const img = document.createElement('img');
+  img.src = thumbURL(off);
+  const tag = document.createElement('div');
+  tag.className = 'tag'; tag.textContent = label;
+  cell.appendChild(img); cell.appendChild(tag);
+  stripEl.prepend(cell);
+  while (stripEl.children.length > 10) stripEl.lastChild.remove();
+}
+
+let rollN = 0;
+function newOrbit(){
+  const kindSel = document.getElementById('kind').value;
+  const rnd = mulberry32((seedBase + (++rollN) * 7919) | 0);
+  let att, res, tries = 0;
+  do {
+    const kind = kindSel === 'any'
+      ? ['hopalong', 'dejong', 'svensson'][(rnd() * 3) | 0]
+      : kindSel;
+    att = rollParams(kind, rnd);
+    res = renderOrbit(att);
+    tries++;
+    if (!res.ok && tries <= 3){
+      // show the dud on the reject wall
+      const off = paintHistogram();
+      addStrip(off, 'dud: ' + res.reason, true);
+    }
+  } while (!res.ok && tries <= 3);
+  currentAtt = att;
+  if (res.ok){
+    currentOff = paintHistogram();
+    currentVerdict = '<span class="k">keeper</span> · ' + att.kind +
+      ' · coverage ' + (res.coverage * 100).toFixed(1) + '%';
+    addStrip(currentOff, att.kind, false);
+  } else {
+    currentOff = paintHistogram();
+    currentVerdict = '<span class="d">dud</span> · ' + res.reason + ' · kept anyway, it has character';
+    addStrip(currentOff, 'dud: ' + res.reason, true);
+  }
+  verdictEl.innerHTML = currentVerdict;
+  redraw();
+}
+
+document.getElementById('roll').addEventListener('click', newOrbit);
+resize();
+newOrbit();
+</script>
+</body>
+</html>
